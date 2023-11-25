@@ -119,7 +119,7 @@ function scag_general_traversal(G::MetaDiGraph, edge, rclass::RoadClass, flow)
     # component of costs, and the turn cost is the component that would be on the turns. However, if we scale the turn cost portion
     # based on the flow on the total segment, the edges in our hyopthetical graph no longer have costs that are only a function of flow
     # on that edge. But if we don't scale the turn costs, it should be okay.
-    return link_traversal_secs * (1 + SCAG_BPR_ALPHA * (flow / capacity)) + turn_cost
+    return link_traversal_secs * (1 + SCAG_BPR_ALPHA * (flow / capacity) ^ β) + turn_cost
 end
 
 function scag_motorway_entrance_traversal(G::MetaDiGraph, edge, flow)
