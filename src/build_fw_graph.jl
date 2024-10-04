@@ -1,46 +1,38 @@
 # Build a Franke-Wolfe graph from OSM data
 
-using MetaGraphs
-using LightGraphs
-using OSMPBF
-using ArgParse
-using DataStructures
-using Geodesy
-using Serialization
-using CSV
-using DataFrames
-using CodecZlib
-
 const MILES_TO_KILOMETERS = 1.609344
 const KNOTS_TO_KMH = 1.852
 
-include("compute_heading.jl")
-include("fw_types.jl")
-
 const hwytags = Set(["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", "secondary_link", "tertiary_link", "unclassified"])
 
-function parse_args()
-    s = ArgParseSettings()
-    @add_arg_table s begin
-        "osm_pbf"
-            help = "An OpenStreetMap .pbf file to process"
-        "network"
-            help = "An output file to write the network to (extension .fwgr)"
-        "--save-names"
-            help = "Save a sidecar file with street names"
-            action = :store_true
-        "--save-geometries"
-            help = "Save a sidecar file with way geometries"
-            action = :store_true
-    end
-    return ArgParse.parse_args(s)
+struct NodeAndCoord
+    id::Int64
+    lat::Float64
+    lon::Float64
 end
 
-function save_geoms(way_segments, node_geoms, filename)
+mutable struct WaySegment
+    origin_node::Int64
+    destination_node::Int64
+    way_id::Int64
+    heading_start::Float32
+    heading_end::Float32
+    length_m::Float32
+    class::RoadClass.T
+    oneway::Bool
+    traffic_signal::Int32  # number of traffic signals on this way, _not including at first node_
+    back_traffic_signal::Int32 # number of traffic signals on this way, _not including at last node_
+    lanes::Union{Int64, Missing}
+    speed_kmh::Union{Float64, Missing}
+    # can't be packed, oh well - we're not serializing anyhow
+    nodes::Vector{Int64}
+end
+
+function save_geometries(way_segments, node_geoms, filename)
     # store the geometries for later use in visualization
     geoms::Vector{Vector{NodeAndCoord}} = map(way_segments) do ws
         map(ws.nodes) do nid
-            geom = node_geoms[nid]::LLA
+            geom = node_geoms[nid]::LatLon{Float64}
             return NodeAndCoord(nid, geom.lat, geom.lon)
         end
     end
@@ -75,13 +67,7 @@ function parse_max_speed(speed_text)::Union{Float64, Missing}
     end
 end
 
-function main()
-    args = parse_args()
-    pbf = args["osm_pbf"]::String
-    outf = args["network"]::String
-    save_names = args["save-names"]::Bool
-    save_geom = args["save-geometries"]::Bool
-
+function build_graph(pbf, outf; save_names=true, save_geoms=true)
     # find all nodes that occur in more than one way
     node_count = counter(Int64)
 
@@ -114,7 +100,7 @@ function main()
     @info "..found $(length(intersection_nodes)) intersection nodes"
 
     @info "Pass 2: read intersection and other highway nodes"
-    node_geom = Dict{Int64, LLA}()
+    node_geom = Dict{Int64, LatLon{Float64}}()
     traffic_signal_nodes = Set{Int64}()
     scan_pbf(
         pbf,
@@ -122,7 +108,7 @@ function main()
             if haskey(node_count, n.id)
                 # lat lon, not lon lat, and we're not using altitude
                 # LA is not that far above sea level anyways...
-                node_geom[n.id] = LLA(n.lat, n.lon, 0)
+                node_geom[n.id] = LatLon(n.lat, n.lon)
 
                 if haskey(n.tags, "highway") && n.tags["highway"] == "traffic_signals"
                     push!(traffic_signal_nodes, n.id)
@@ -388,14 +374,11 @@ function main()
     @info "creating edge-based graph"
     # confusing, but this is an edge-based graph - one vertex per _way segment_, and the numbers
     # are parallel to the vector way_segments
-    G = MetaDiGraph(length(way_segments))
+    G = FWGraph()
+
+    eidx = 1
 
     for (srcidx, way_segment) in enumerate(way_segments)
-        # set the location of this way segment vertex to be the start of the way - used for snapping
-        # in snapping, we will still be able to snap to the end of a cul-de-sac because of the back edge,
-        # unless it is a one-way cul-de-sac... cf. https://github.com/conveyal/r5/blob/dev/src/main/java/com/conveyal/r5/streets/TarjanIslandPruner.java
-        set_prop!(G, srcidx, :geom, node_geom[way_segment.origin_node])
-
         # find all of the way segments this way segment is connected to
         for tgtidx in way_segments_by_start_node[way_segment.destination_node]
             # figure out if this is a straight-on or turn action
@@ -416,21 +399,45 @@ function main()
             # end
 
             # error if adding edge fails
-            @assert add_edge!(G, srcidx, tgtidx)
-            
-            # set the edge metadata
-            set_prop!(G, srcidx, tgtidx, :length_m, way_segment.length_m)
-            set_prop!(G, srcidx, tgtidx, :this_class, way_segment.class)
-            set_prop!(G, srcidx, tgtidx, :next_class, tgtseg.class)
-            set_prop!(G, srcidx, tgtidx, :turn_angle, Δhdg)
-            set_prop!(G, srcidx, tgtidx, :traffic_signal, way_segment.traffic_signal)
-            set_prop!(G, srcidx, tgtidx, :speed_kmh, way_segment.speed_kmh)
-            set_prop!(G, srcidx, tgtidx, :lanes, way_segment.lanes)
-            set_prop!(G, srcidx, tgtidx, :oneway, way_segment.oneway)
-            set_prop!(G, srcidx, tgtidx, :this_class, way_segment.class)
-            set_prop!(G, srcidx, tgtidx, :next_class, tgtseg.class)
+            # set the location of this way segment vertex to be the start of the way - used for snapping
+            # in snapping, we will still be able to snap to the end of a cul-de-sac because of the back edge,
+            # unless it is a one-way cul-de-sac... cf. https://github.com/conveyal/r5/blob/dev/src/main/java/com/conveyal/r5/streets/TarjanIslandPruner.java
+
+            # Ensure source and target are already in graph
+            # set the location of this way segment vertex to be the start of the way - used for snapping
+            # in snapping, we will still be able to snap to the end of a cul-de-sac because of the back edge,
+            # unless it is a one-way cul-de-sac... cf. https://github.com/conveyal/r5/blob/dev/src/main/java/com/conveyal/r5/streets/TarjanIslandPruner.java
+            G.G[VertexID(srcidx)] = (geom=node_geom[way_segment.origin_node],)
+            G.G[VertexID(tgtidx)] = (geom=node_geom[tgtseg.origin_node],)
+
+            G.G[VertexID(srcidx), VertexID(tgtidx)] = (
+                length_m=round(UInt16, way_segment.length_m),
+                this_class=way_segment.class,
+                next_class=tgtseg.class,
+                turn_angle=round(Int16, Δhdg),
+                traffic_signal=round(UInt8, way_segment.traffic_signal),
+                speed_kmh=passmissing(round)(UInt8, way_segment.speed_kmh),
+                lanes=passmissing(round)(UInt8, way_segment.lanes),
+                oneway=way_segment.oneway,
+                weight=NaN,
+                freeflow_traversal_time_secs=NaN,
+                turn_cost_secs=NaN,
+                eidx=eidx
+            )
+            eidx += 1
         end
     end
+
+    components = strongly_connected_components(G.G)
+    to_retain = Set(components[argmax(map(length, components))])
+    
+    # loop backwards so vertex IDs don't change
+    for vertex in nv(G.G):-1:1
+        if vertex ∉ to_retain
+            rem_vertex!(G.G, vertex)
+        end
+    end
+
 
     @info "writing graph"
     serialize(outf, G)
@@ -448,9 +455,7 @@ function main()
         end
     end
 
-    if save_geom
-        save_geoms(new_way_segments, node_geom, "$outf.geoms")
+    if save_geoms
+        save_geometries(new_way_segments, node_geom, "$outf.geoms")
     end
 end
-
-main()

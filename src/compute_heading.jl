@@ -1,6 +1,6 @@
 using Geodesy
 
-function compute_heading(from::LLA, to::LLA)::Float32
+function compute_heading(from, to)
     # # https://towardsdatascience.com/calculating-the-bearing-between-two-geospatial-coordinates-66203f57e4b4
     # ΔL = to.lon - from.lon
     # x = cosd(to.lat) * sind(ΔL)
@@ -19,7 +19,7 @@ function compute_heading(from::LLA, to::LLA)::Float32
         bearing += 360
     end
 
-    return convert(Float32, bearing)::Float32
+    bearing
 end
 
 function circular_add(bearing::Real, Δ::Real)::Float32
