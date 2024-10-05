@@ -59,6 +59,7 @@ mutable struct FWGraph
     G::MetaGraph{Int64, DiGraph{Int64}, VertexID, VertexData, EdgeData}
     spidx::Union{LibSpatialIndex.RTree, Nothing}
     next_centroid_connector::Int64
+    center_lat::Float64
 end
 
 function FWGraph()
@@ -68,5 +69,5 @@ function FWGraph()
         edge_data_type=EdgeData,
         vertex_data_type=VertexData,
         weight_function=ed -> ed.weight
-    ), nothing, -1)
+    ), nothing, -1, 0)
 end

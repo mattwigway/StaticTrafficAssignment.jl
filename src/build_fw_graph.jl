@@ -442,6 +442,8 @@ function build_graph(pbf, outf; save_names=true, save_geoms=true)
     @info "writing graph"
     serialize(outf, G)
 
+    retained_segments = [v.id for v in labels(G.G)]
+
     if save_names
         @info "writing names"
         name_file = "$outf.names.gz"
@@ -450,12 +452,12 @@ function build_graph(pbf, outf; save_names=true, save_geoms=true)
         # https://stackoverflow.com/questions/52900232/export-an-array-to-a-csv-file-in-julia
         open(name_file, "w") do raw_stream
             gzstream = GzipCompressorStream(raw_stream)
-            CSV.write(gzstream, DataFrame(nm=way_segment_names), writeheader=false)
+            CSV.write(gzstream, DataFrame(nm=way_segment_names[retained_segments]), writeheader=false)
             close(gzstream)
         end
     end
 
     if save_geoms
-        save_geometries(new_way_segments, node_geom, "$outf.geoms")
+        save_geometries(new_way_segments[retained_segments], node_geom, "$outf.geoms")
     end
 end

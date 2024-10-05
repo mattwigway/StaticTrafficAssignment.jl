@@ -30,7 +30,7 @@ struct PerLaneCapacityByTypeCalculator <: CapacityCalculator
 end
 
 function get_capacity(c::PerLaneCapacityByTypeCalculator, e::EdgeData)
-    lanes = coalesce(e.lanes, 1)
+    lanes = max(coalesce(e.lanes, 1), 1)
 
     if haskey(c.values, e.this_class)
         c.values[e.this_class] * lanes

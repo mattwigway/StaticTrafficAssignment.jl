@@ -13,7 +13,7 @@ function create_centroid_connectors!(G, ids, locations::AbstractVector{<:LatLon{
     connectors = Dict{eltype(ids), VertexID}()
 
     for (id, location) in zip(ids, locations)
-        candidates = LibSpatialIndex.knn(G.spidx, [location.lon / cosd(location.lat), location.lat], 15)
+        candidates = LibSpatialIndex.knn(G.spidx, [location.lon * cosd(G.center_lat), location.lat], 15)
 
         if isempty(candidates)
             @warn "TAZ $id at $location not linked"
@@ -25,6 +25,10 @@ function create_centroid_connectors!(G, ids, locations::AbstractVector{<:LatLon{
         end
 
         thres_dist = minimum(distances) * 1.1
+
+        if (thres_dist > typemax(UInt16))
+            @warn "TAZ $id at $location is more than $(typemax(UInt16))m from nearest road, clamping centroid connector length at $(typemax(UInt16))m"
+        end
 
         vid = VertexID(G.next_centroid_connector)
         G.next_centroid_connector -= 1 # centroid connectors have negative indices
@@ -39,7 +43,7 @@ function create_centroid_connectors!(G, ids, locations::AbstractVector{<:LatLon{
                 # Centroid connectors are kinda weird here–while the rest of the graph is turn-based,
                 # centroid connectors are not—just a vertex with edges to each of the nearby ways
                 G.G[vid, VertexID(candidate)] = (
-                    length_m=round(UInt16, distance),
+                    length_m=round(UInt16, min(distance, typemax(UInt16))),
                     this_class=RoadClass.centroid_connector,
                     next_class=RoadClass.centroid_connector, # TODO not correct
                     turn_angle=zero(Int16),
@@ -53,9 +57,9 @@ function create_centroid_connectors!(G, ids, locations::AbstractVector{<:LatLon{
                     eidx=0
                 )
 
-                # Cannot re-use edge data, edge ID is difference
+                # Cannot re-use edge data, edge ID is different
                 G.G[VertexID(candidate), vid] = (
-                    length_m=round(UInt16, distance),
+                    length_m=round(UInt16, min(distance, typemax(UInt16))),
                     this_class=RoadClass.centroid_connector,
                     next_class=RoadClass.centroid_connector, # TODO not correct
                     turn_angle=zero(Int16),
@@ -74,5 +78,22 @@ function create_centroid_connectors!(G, ids, locations::AbstractVector{<:LatLon{
         @assert linked
     end
 
+    renumber_edges!(G)
+
     return connectors
+end
+
+
+"""
+    renumber_edges!(G)
+
+Update edge indices in G to be 1:ne(G)
+"""
+function renumber_edges!(G)
+    for (idx, (src, tgt)) in enumerate(edge_labels(G.G))
+        G.G[src, tgt] = (
+            G.G[src, tgt]...,
+            eidx=idx
+        )
+    end
 end
