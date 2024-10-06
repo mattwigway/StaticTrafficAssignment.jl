@@ -1,0 +1,83 @@
+```{julia}
+using StaticTrafficAssignment, CSV, CodecZlib, DataFrames, GeoDataFrames, DataFramesMeta, ArchGDAL, Geodesy, Serialization
+```
+
+```{julia}
+indiv_trips = CSV.read("demo/indivTripData_3.csv.gz", DataFrame)
+joint_trips = CSV.read("demo/jointTripData_3.csv.gz", DataFrame)
+```
+
+## Filter to just auto trips
+
+[Mode dictionary](https://github.com/BayAreaMetro/modeling-website/wiki/TravelModes#tour-and-trip-modes)
+
+```{julia}
+indiv_trips = indiv_trips[indiv_trips.trip_mode .≤ 6, :]
+joint_trips = joint_trips[joint_trips.trip_mode .≤ 6, :]
+```
+
+```{julia}
+indiv_od = @chain indiv_trips begin
+    @subset(:depart_hour .== 8)
+    groupby([:orig_taz, :dest_taz])
+    @combine(:n = length(:hh_id) * 2) # account for sampling
+end
+
+joint_od = @chain joint_trips begin
+    @subset(:depart_hour .== 8)
+    groupby([:orig_taz, :dest_taz])
+    @combine(:n = sum(1 ./ :num_participants))
+end
+
+overall_od = @chain vcat(indiv_od, joint_od) begin
+    groupby([:orig_taz, :dest_taz])
+    @combine(:n = sum(:n))
+end
+```
+
+## Read TAZ locations
+
+```{julia}
+tazs = GeoDataFrames.read("demo/taz_points.geojson")
+tazs.location = map(tazs.geometry) do g
+    c = ArchGDAL.getpoint(g, 0)
+    LatLon(c[2], c[1])
+end;
+```
+
+## Read graph
+
+```{julia}
+G = deserialize("demo/sf.fwgr")
+```
+
+## Link centroids
+
+```{julia}
+connectors = create_centroid_connectors!(G, tazs.taz_key, tazs.location)
+```
+
+## Store in GIS format
+
+```{julia}
+StaticTrafficAssignment.graph_to_gis("demo/sf.gpkg", G, "demo/sf.fwgr.geoms", "demo/sf.fwgr.names.gz")
+```
+
+## Reformat od matrix
+
+```{julia}
+flows = flows_from_dataframe(overall_od, :orig_taz, :dest_taz, :n, connectors)
+```
+
+## Assign!!!!!
+
+```{julia}
+assign_frankwolfe!(G, flows,
+    VDF.BPR(0.6, 7),
+    VDF.PerLaneCapacityByTypeCalculator(Dict(StaticTrafficAssignment.RoadClass.motorway => 2000), 675),
+    iteration_callback=(i, s, λ, rg) -> serialize("demo/iters/iter_$i.state", (state=s, λ=λ, rg=rg))
+)
+```
+
+```{julia}
+```
