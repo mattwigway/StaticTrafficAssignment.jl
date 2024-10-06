@@ -68,7 +68,7 @@ function assign_frankwolfe!(G, odflows, costfunc::VDF.DelayFunc, capacityfunc::V
         update_costs!(G, state, capacityfunc, costfunc)
 
         if !isnothing(iteration_callback)
-            iteration_callback(iter, state, λ)
+            iteration_callback(iter, state, λ, rel_gap)
         end
 
         if rel_gap <= rel_gap_tol
@@ -132,9 +132,12 @@ function all_or_nothing!(G::FWGraph, odflows, state::AssignmentState)
 
                 while (djstate.parents[current_vertex] != 0 && djstate.parents[current_vertex] != current_vertex)
                     parent = djstate.parents[current_vertex]
-                    eidx = G.G[label_for(G.G, parent), label_for(G.G, current_vertex)].eidx                        
-                    state.all_or_nothing_turn_flows[eidx] += n_trips
-                    state.all_or_nothing_segment_flows[parent] += n_trips
+                    edg = G.G[label_for(G.G, parent), label_for(G.G, current_vertex)]                        
+                    state.all_or_nothing_turn_flows[edg.eidx] += n_trips
+                    if edg.this_class != RoadClass.centroid_connector
+                        # centroid connectors should not contribute to flows on their parent
+                        state.all_or_nothing_segment_flows[parent] += n_trips
+                    end
                     current_vertex = parent 
                 end
             end
@@ -163,12 +166,12 @@ function aggregate_cost(G, state, λ, capacityfunc, costfunc)
         current_flow = state.current_segment_flows[code_for(G.G, src)]
         current_segment_flow = λ * aon_flow + (1 - λ) * current_flow
         capacity = VDF.get_capacity(capacityfunc, edg)
-        congested_to_ff_ratio = #if edg.this_class != RoadClass.centroid_connector
+        congested_to_ff_ratio = if edg.this_class != RoadClass.centroid_connector
             VDF.get_delay(costfunc, edg, current_segment_flow, capacity)
-        # else
-        #     # no delay on centroid connectors
-        #     1.0
-        # end
+        else
+            # no delay on centroid connectors
+            1.0
+        end
         total_cost = edg.freeflow_traversal_time_secs * congested_to_ff_ratio + edg.turn_cost_secs
 
         last_turn_flow = state.current_turn_flows[eidx]
@@ -199,7 +202,7 @@ end
 function update_costs!(G::FWGraph, state::AssignmentState, capacityfunc, costfunc)
     for (src, tgt) in edge_labels(G.G)
         edg = G.G[src, tgt]
-        #if edg.this_class != RoadClass.centroid_connector
+        if edg.this_class != RoadClass.centroid_connector
             # centroid connectors do not become congested
             # This actually doesn't work, I think because centroid connector flow gets applied to parent above!
             # So it affects the travel time on the other turns, but then is not costed in appropriately.
@@ -218,7 +221,7 @@ function update_costs!(G::FWGraph, state::AssignmentState, capacityfunc, costfun
                 G.G[src, tgt]...,
                 weight=total_cost
             )
-        #end
+        end
     end
 end
 

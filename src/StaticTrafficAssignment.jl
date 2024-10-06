@@ -9,11 +9,15 @@ import DataStructures: counter, inc!, DefaultDict
 import OpenStreetMapPBF: scan_pbf
 import Logging: @warn, @error, @info
 import Missings: passmissing
-import Serialization: serialize
-import CodecZlib: GzipCompressorStream
+import Serialization: serialize, deserialize
+import CodecZlib: GzipCompressorStream, GzipDecompressorStream
 import CSV
-import DataFrames: DataFrame, groupby
-import ForwardDiff
+import DataFrames: DataFrame, groupby, metadata!, nrow
+import Optim: optimize, Brent, minimizer, converged
+import GeoDataFrames
+import GeoFormatTypes as GFT
+import ArchGDAL as AG
+import StatsBase: median
 
 include("fwgraph.jl")
 include("compute_heading.jl")
@@ -24,6 +28,7 @@ include("costfuncs.jl")
 include("fw_weights.jl")
 include("assignment.jl")
 include("flows_from_dataframe.jl")
+include("gis.jl")
 
-export build_graph, create_centroid_connectors!, flows_from_dataframe, assign_frankwolfe!, VDF
+export build_graph, create_centroid_connectors!, flows_from_dataframe, assign_frankwolfe!, VDF, graph_to_gis
 end
